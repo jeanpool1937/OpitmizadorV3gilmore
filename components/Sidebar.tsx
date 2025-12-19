@@ -96,30 +96,47 @@ export const Sidebar: React.FC<SidebarProps> = ({ config, setConfig, isSolving, 
 
 
           <div className="space-y-1">
-            <label className="text-xs text-slate-400">Capacidad Planta (Ton/Día)</label>
+            <label className="text-xs text-slate-400">Capacidad Planta (Horas/Día)</label>
             <div className="flex items-center gap-2">
               <Factory className="w-4 h-4 text-emerald-500" />
               <input
                 type="number"
-                value={config.dailyCapacity}
-                onChange={(e) => handleChange('dailyCapacity', e.target.value)}
+                step="0.5"
+                value={config.dailyCapacityHours}
+                onChange={(e) => handleChange('dailyCapacityHours', e.target.value)}
                 className="w-full bg-slate-800 border border-emerald-900/50 rounded px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none text-white"
               />
             </div>
           </div>
 
           <div className="space-y-1">
-            <label className="text-xs text-slate-400">Penalización Setup (Ton/Diseño)</label>
+            <label className="text-xs text-slate-400">Penalización Setup (Horas/Cambio)</label>
             <div className="flex items-center gap-2">
               <Timer className="w-4 h-4 text-orange-500" />
               <input
                 type="number"
-                value={config.setupPenalty}
-                onChange={(e) => handleChange('setupPenalty', e.target.value)}
+                step="0.25"
+                value={config.setupPenaltyHours}
+                onChange={(e) => handleChange('setupPenaltyHours', e.target.value)}
                 className="w-full bg-slate-800 border border-orange-900/50 rounded px-3 py-2 text-sm focus:ring-2 focus:ring-orange-500 outline-none text-white"
               />
             </div>
-            <p className="text-[10px] text-slate-500">Capacidad perdida por cambio de patrón.</p>
+            <p className="text-[10px] text-slate-500">Tiempo perdido por cambio de BOINA.</p>
+          </div>
+
+          <div className="space-y-1">
+            <label className="text-xs text-slate-400">Penalización Cuchillas (Horas)</label>
+            <div className="flex items-center gap-2">
+              <Timer className="w-4 h-4 text-yellow-500" />
+              <input
+                type="number"
+                step="0.25"
+                value={config.knifeChangePenaltyHours}
+                onChange={(e) => handleChange('knifeChangePenaltyHours', e.target.value)}
+                className="w-full bg-slate-800 border border-yellow-900/50 rounded px-3 py-2 text-sm focus:ring-2 focus:ring-yellow-500 outline-none text-white"
+              />
+            </div>
+            <p className="text-[10px] text-slate-500">Tiempo perdido cambiar cuchillas (misma bobina).</p>
           </div>
 
           <div className="space-y-1">

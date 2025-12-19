@@ -608,7 +608,7 @@ export const calculateGlobalSchedule = (
 
     // 5. Fill Schedule Buckets
     const schedule: DailyPlan[] = [];
-    const setupPenalty = baseConfig.setupPenalty || 0;
+    const setupPenalty = baseConfig.setupPenaltyHours || 1.5;
 
     let currentDateStr = baseConfig.scheduleStartDate || new Date().toISOString().split('T')[0];
 
@@ -854,7 +854,7 @@ export const solveBatchCuttingStock = (
         globalSchedule = calculateGlobalSchedule(
             results,
             allDemands,
-            baseConfig.dailyCapacity,
+            baseConfig.dailyCapacityHours,
             baseConfig,
             groups
         );
@@ -992,7 +992,7 @@ export const calculateMaxLateness = (schedule: DailyPlan[], demands: Demand[]): 
 export const calculateGlobalScheduleALAP = (
     allResults: Record<string, OptimizationResult>,
     allDemands: Demand[],
-    globalCapacity: number,
+    dailyCapacityHoursConfig: number, // interpreted as Hours (e.g. 24)
     baseConfig: SolverConfig,
     coilGroupConfigs: CoilGroupConfig[]
 ): DailyPlan[] => {
@@ -1000,43 +1000,54 @@ export const calculateGlobalScheduleALAP = (
     const JIT_BUFFER_DAYS = 2;
     const DAY_MS = 24 * 60 * 60 * 1000;
 
-    // 1. Setup Coil Description Map
+    // 1. Setup Coil Description Map & Rhythm Lookup
     const descriptionMap: Record<string, string> = {};
     coilGroupConfigs.forEach(g => {
         descriptionMap[g.coilCode] = g.description;
     });
 
+    // Lookup Rhythm from Coil Master
+    const coilMasterData = getCoilMasterData();
+    const rhythmMap: Record<string, number> = {};
+    coilMasterData.forEach(c => {
+        rhythmMap[c.code] = c.rhythm;
+    });
+
+    const getRhythm = (code: string) => {
+        // Default to 5 t/h if unknown to avoid div by zero or huge numbers
+        return rhythmMap[code] || 5.0;
+    };
+
     // 2. Build Direct Demand Lookup: (coilCode, widthKey) -> earliest demand date (ms)
-    // This is the KEY FIX: directly read demand dates instead of complex tracking
     const demandDateLookup: Record<string, Record<number, number>> = {};
 
     allDemands.forEach(d => {
         const code = d.coilCode || 'DEFAULT';
-        const wKey = Math.round(d.width * 100); // Integer key for precision
+        const wKey = Math.round(d.width * 100);
         const dateMs = new Date(d.date).getTime();
 
         if (!demandDateLookup[code]) demandDateLookup[code] = {};
-
-        // Keep the EARLIEST date for each (coilCode, width)
         if (!demandDateLookup[code][wKey] || dateMs < demandDateLookup[code][wKey]) {
             demandDateLookup[code][wKey] = dateMs;
         }
     });
 
-    // 3. Create Task Queue with Correct Target Dates
+    // 3. Create Task Queue
     interface ScheduleTask {
         pattern: Pattern;
         patternId: number;
         coilCode: string;
         weightPerCoil: number;
-        targetDateMs: number; // When this should be produced (JIT)
+        durationHours: number; // Time to produce this coil
+        targetDateMs: number;
     }
 
     const tasks: ScheduleTask[] = [];
 
     Object.entries(allResults).forEach(([coilCode, result]) => {
+        const hourlyRate = getRhythm(coilCode);
+
         result.patterns.forEach(pattern => {
-            // Find the EARLIEST demand date among all cuts in this pattern
             let earliestDemandMs = Infinity;
 
             pattern.cuts.forEach(cut => {
@@ -1047,17 +1058,16 @@ export const calculateGlobalScheduleALAP = (
                 }
             });
 
-            // If no demand found, use a far future date (stock items)
             if (earliestDemandMs === Infinity) {
                 earliestDemandMs = new Date('2030-12-31').getTime();
             }
 
-            // Calculate JIT target: Demand - Buffer
             const targetDateMs = earliestDemandMs - (JIT_BUFFER_DAYS * DAY_MS);
 
             // Expand pattern into individual coil tasks
             const coilsToSchedule = Math.ceil(pattern.assignedCoils);
             const weightPerCoil = pattern.totalProductionWeight / pattern.assignedCoils;
+            const durationHours = weightPerCoil / hourlyRate;
 
             for (let i = 0; i < coilsToSchedule; i++) {
                 tasks.push({
@@ -1065,6 +1075,7 @@ export const calculateGlobalScheduleALAP = (
                     patternId: pattern.id,
                     coilCode,
                     weightPerCoil,
+                    durationHours, // Computed based on coil rhythm
                     targetDateMs
                 });
             }
@@ -1073,23 +1084,31 @@ export const calculateGlobalScheduleALAP = (
 
     if (tasks.length === 0) return [];
 
-    // 4. Sort Tasks by Target Date DESCENDING (latest first for ALAP)
+    // 4. Sort Tasks by Target Date DESCENDING (ALAP)
     tasks.sort((a, b) => b.targetDateMs - a.targetDateMs);
 
     // 5. Initialize Schedule Map
-    const scheduleMap: Record<string, DailyPlan> = {};
-    const setupPenalty = baseConfig.setupPenalty || 0;
+    const scheduleMap: Record<string, { plan: DailyPlan, usedHours: number }> = {};
+    const setupPenaltyHours = baseConfig.setupPenaltyHours || 1.5;
 
-    const getDayPlan = (dateStr: string): DailyPlan => {
+    // Ensure we treat the config as hours. If user passed ~22 (tons) thinking it was capacity, 
+    // it will now be treated as 22 hours, which is also reasonable for a day. 
+    // Ideally it should be 24. A value > 24 should probably be clamped or warned, but let's trust it for now.
+    const MAX_HOURS_PER_DAY = dailyCapacityHoursConfig > 30 ? 24 : dailyCapacityHoursConfig;
+
+    const getDayContext = (dateStr: string) => {
         if (!scheduleMap[dateStr]) {
             scheduleMap[dateStr] = {
-                date: dateStr,
-                patterns: [],
-                totalTons: 0,
-                producedItems: {},
-                dailyYield: 0,
-                capacityUsedPercent: 0,
-                setupPenaltyTons: 0
+                plan: {
+                    date: dateStr,
+                    patterns: [],
+                    totalTons: 0,
+                    producedItems: {},
+                    dailyYield: 0,
+                    capacityUsedPercent: 0,
+                    setupPenaltyTons: 0 // We will use this field to store Setup HOURS for display context
+                },
+                usedHours: 0
             };
         }
         return scheduleMap[dateStr];
@@ -1099,76 +1118,159 @@ export const calculateGlobalScheduleALAP = (
         return new Date(ms).toISOString().split('T')[0];
     };
 
-    const getCapacityForDay = (dateStr: string): number => {
+    // Sunday logic: Reduced hours?
+    const getAvailableHours = (dateStr: string): number => {
         const dayOfWeek = new Date(dateStr + 'T12:00:00Z').getUTCDay();
-        return dayOfWeek === 0 ? globalCapacity * 0.5 : globalCapacity;
+        // 0 = Sunday. Maybe 50% hours on Sunday?
+        return dayOfWeek === 0 ? MAX_HOURS_PER_DAY * 0.5 : MAX_HOURS_PER_DAY;
     };
 
-    // 6. Place Each Task in Calendar (ALAP)
+    // 6. Place Tasks
     tasks.forEach(task => {
         let candidateDateMs = task.targetDateMs;
-        let placed = false;
         let attempts = 0;
         const MAX_LOOKBACK = 365 * 2;
+        let remainingDuration = task.durationHours;
 
-        while (!placed && attempts < MAX_LOOKBACK) {
+        while (remainingDuration > 0.001 && attempts < MAX_LOOKBACK) {
             const candidateDateStr = msToDateStr(candidateDateMs);
-            const dayPlan = getDayPlan(candidateDateStr);
-            const rawCapacity = getCapacityForDay(candidateDateStr);
+            const ctx = getDayContext(candidateDateStr);
+            const availableHours = getAvailableHours(candidateDateStr);
+            const knifePenalty = baseConfig.knifeChangePenaltyHours ?? 0.5;
 
-            // Calculate setup penalty for this day
+            // Determine setup penalty
             const patternKey = `${task.coilCode}-${task.patternId}`;
-            const existingPatterns = new Set(dayPlan.patterns.map(p => `${p.coilCode}-${p.patternId}`));
-            const willAddNewPattern = !existingPatterns.has(patternKey);
+            const existingPatterns = new Set(ctx.plan.patterns.map(p => `${p.coilCode}-${p.patternId}`));
+            const existingCoils = new Set(ctx.plan.patterns.map(p => p.coilCode));
 
-            const projectedPenalty = (existingPatterns.size + (willAddNewPattern ? 1 : 0)) * setupPenalty;
-            const availableCapacity = rawCapacity - projectedPenalty;
+            let setupCost = 0;
+            const coilChangePenalty = setupPenaltyHours; // Full setup penalty
 
-            // Check if task fits
-            if (dayPlan.totalTons + task.weightPerCoil <= availableCapacity) {
-                placed = true;
+            if (existingPatterns.has(patternKey)) {
+                // Pattern already running today, no extra setup
+                setupCost = 0;
+            } else if (existingCoils.has(task.coilCode)) {
+                // Same Coil, Different Pattern -> Knife Change (Low Penalty)
+                setupCost = knifePenalty;
+            } else {
+                // New Coil -> Full Setup
+                setupCost = coilChangePenalty;
+            }
+
+            // Check Space
+            const spaceInDay = availableHours - ctx.usedHours;
+
+            // If there's enough space for at least the setup cost and a tiny bit of work
+            if (spaceInDay > setupCost + 0.01) {
+                // Calculate how much actual WORK fits (excluding setup)
+                const workCapacity = spaceInDay - setupCost;
+
+                // Determine how much we put here
+                const durationToPlace = Math.min(remainingDuration, workCapacity);
+
+                // Calculate proportion of weight
+                const portionRatio = durationToPlace / task.durationHours;
+                const weightToPlace = task.weightPerCoil * portionRatio;
 
                 // Add to day plan
-                const existingPattern = dayPlan.patterns.find(
+                let existingPattern = ctx.plan.patterns.find(
                     p => p.patternId === task.patternId && p.coilCode === task.coilCode
                 );
 
                 if (existingPattern) {
-                    existingPattern.coils++;
+                    // Fractional addition visually represented as fraction of coil? 
+                    // Or just accumulate weight. DailyPlan uses 'coils' int usually, 
+                    // but for splitting we might need to be flexible or visual artifacts occur.
+                    // Let's assume 'coils' is purely a counter for complexity, 
+                    // but totalTons is the truth.
+                    existingPattern.coils += portionRatio;
                 } else {
-                    dayPlan.patterns.push({
+                    // Only apply setup cost if this is the first time this pattern is added to the day
+                    ctx.plan.patterns.push({
                         patternId: task.patternId,
-                        coils: 1,
+                        coils: portionRatio,
                         pattern: task.pattern,
                         coilCode: task.coilCode,
                         coilDescription: descriptionMap[task.coilCode] || ''
                     });
                 }
 
-                dayPlan.totalTons += task.weightPerCoil;
+                ctx.plan.totalTons += weightToPlace;
+                ctx.usedHours += (durationToPlace + setupCost); // Setup cost applied here
+
+                // Add produced items (fractional)
                 task.pattern.cuts.forEach(cut => {
-                    dayPlan.producedItems[cut.width] =
-                        (dayPlan.producedItems[cut.width] || 0) + cut.weightPerCut;
+                    ctx.plan.producedItems[cut.width] =
+                        (ctx.plan.producedItems[cut.width] || 0) + (cut.weightPerCut * portionRatio);
                 });
-                dayPlan.setupPenaltyTons = projectedPenalty;
+
+                remainingDuration -= durationToPlace;
+
+                if (remainingDuration <= 0.001) {
+                    // Task fully placed
+                    // No need to set 'placed = true' as the while condition handles it
+                } else {
+                    // Move remainder to previous day
+                    candidateDateMs -= DAY_MS;
+                    attempts++;
+                }
+
             } else {
-                // Day is full, move to previous day
+                // Not enough space even for setup/tiny work, move to previous day
                 candidateDateMs -= DAY_MS;
                 attempts++;
             }
         }
     });
 
-    // 7. Convert to Array and Sort by Date (ascending)
-    const resultArray = Object.values(scheduleMap).sort(
+    // 7. Convert and Finalize
+    const resultArray = Object.values(scheduleMap).map(ctx => ctx.plan).sort(
         (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
     );
 
-    // 8. Calculate Visual Metrics
+    // 8. Calculate Metrics
     resultArray.forEach(day => {
-        const rawCap = getCapacityForDay(day.date);
-        day.capacityUsedPercent = ((day.totalTons + day.setupPenaltyTons) / rawCap) * 100;
+        // Recalculate exact used hours to be precise
+        const availableHours = getAvailableHours(day.date);
 
+        let totalTaskHours = 0;
+        const patternsByCoil: Record<string, Set<number>> = {};
+
+        day.patterns.forEach(p => {
+            const rhythm = getRhythm(p.coilCode || 'DEFAULT');
+            const weight = p.coils * (p.pattern.totalProductionWeight / p.pattern.assignedCoils);
+            totalTaskHours += weight / rhythm;
+
+            const cCode = p.coilCode || 'DEFAULT';
+            if (!patternsByCoil[cCode]) patternsByCoil[cCode] = new Set();
+            patternsByCoil[cCode].add(p.patternId);
+        });
+
+        const knifePenalty = baseConfig.knifeChangePenaltyHours ?? 0.5;
+        let totalSetupHours = 0;
+
+        Object.keys(patternsByCoil).forEach(cCode => {
+            const numPatterns = patternsByCoil[cCode].size;
+            // 1st pattern gets Full Penalty (Coil Change), Rest get Knife Penalty
+            // Exception: If multiple coils of same type are loaded non-contiguously, 
+            // our simple logic here assumes optimization kept them grouped or we pay max penalty.
+            // Given the logic above tries to fit things, let's assume 1 full setup per coil code per day.
+
+            totalSetupHours += setupPenaltyHours;
+            if (numPatterns > 1) {
+                totalSetupHours += (numPatterns - 1) * knifePenalty;
+            }
+        });
+
+        const totalUsedHours = totalTaskHours + totalSetupHours;
+
+        // Capacity % based on TIME
+        day.capacityUsedPercent = (totalUsedHours / availableHours) * 100;
+
+        // Repurpose setupPenaltyTons to show "Hours Lost"
+        day.setupPenaltyTons = totalSetupHours;
+
+        // Yield
         let totalInput = 0;
         let totalOutput = 0;
         day.patterns.forEach(p => {

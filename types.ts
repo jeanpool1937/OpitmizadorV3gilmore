@@ -95,8 +95,9 @@ export interface SolverConfig {
   toleranceMin: number; // Percentage Min (e.g. 10 for -10%)
   toleranceMax: number; // Percentage Max (e.g. 10 for +10%)
   maxCuts: number; // Maximum number of cuts (knives) per pattern
-  dailyCapacity: number; // Max tons to process per day
-  setupPenalty: number; // Tons lost per pattern setup
+  dailyCapacityHours: number; // Max hours to process per day (24h default)
+  setupPenaltyHours: number; // Hours lost per COIL change (1.5h default)
+  knifeChangePenaltyHours: number; // Hours lost per KNIFE change (same coil) (0.5h default)
   scheduleStartDate?: string; // YYYY-MM-DD
 }
 
@@ -116,7 +117,8 @@ export const INITIAL_CONFIG: SolverConfig = {
   toleranceMin: 10,
   toleranceMax: 10,
   maxCuts: 16,
-  dailyCapacity: 300, // Updated to 300T/day
-  setupPenalty: 10, // Updated to 10T penalty per setup
+  dailyCapacityHours: 24, // 24 hours per day
+  setupPenaltyHours: 1.5, // 1.5 hours penalty per coil change
+  knifeChangePenaltyHours: 0.5, // 0.5 hours penalty per knife change
   scheduleStartDate: new Date().toISOString().split('T')[0],
 };

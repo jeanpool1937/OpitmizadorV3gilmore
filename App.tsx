@@ -113,7 +113,7 @@ const App: React.FC = () => {
         const jitSchedule = calculateGlobalScheduleALAP(
           solution.results,
           activeDemands,
-          config.dailyCapacity,
+          config.dailyCapacityHours,
           config,
           groups
         );
@@ -129,7 +129,7 @@ const App: React.FC = () => {
         setMultiCoilResult(solution);
       } catch (error) {
         console.error("Error en solver:", error);
-        alert("Ocurrió un error durante el cálculo.");
+        alert("Error: " + (error instanceof Error ? error.message : String(error)));
       } finally {
         setIsSolving(false);
       }
@@ -221,7 +221,7 @@ const App: React.FC = () => {
         const schedule = calculateGlobalScheduleALAP(
           multiCoilResult.results,
           activeDemands,
-          config.dailyCapacity,
+          config.dailyCapacityHours,
           config,
           groups
         );
@@ -257,7 +257,7 @@ const App: React.FC = () => {
         let schedule = calculateGlobalScheduleALAP(
           multiCoilResult.results,
           activeDemands,
-          config.dailyCapacity,
+          config.dailyCapacityHours,
           config,
           groups
         );

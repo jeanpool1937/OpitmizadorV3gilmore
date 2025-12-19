@@ -24,11 +24,29 @@ interface ResultsProps {
     onSmartSchedule?: () => void;
 }
 
-// Helper: Formatter
+// Helper: Formatter with date validation
 const formatDate = (dateStr: string) => {
     if (dateStr === 'Stock / Sobrante') return dateStr;
     try {
         const [year, month, day] = dateStr.split('-');
+        // Validate date components
+        const yearNum = parseInt(year);
+        const monthNum = parseInt(month);
+        const dayNum = parseInt(day);
+
+        // Check for valid ranges
+        if (isNaN(yearNum) || isNaN(monthNum) || isNaN(dayNum)) return dateStr;
+        if (monthNum < 1 || monthNum > 12) return dateStr;
+        if (dayNum < 1 || dayNum > 31) return dateStr;
+
+        // Verify the date is valid by creating a Date object
+        const testDate = new Date(yearNum, monthNum - 1, dayNum);
+        if (testDate.getFullYear() !== yearNum ||
+            testDate.getMonth() !== monthNum - 1 ||
+            testDate.getDate() !== dayNum) {
+            return dateStr; // Invalid date like Feb 30
+        }
+
         return `${day}/${month}/${year}`;
     } catch (e) {
         return dateStr;
@@ -46,8 +64,8 @@ const DateComplianceView: React.FC<{
         const data: any[] = [];
 
         // Flatten schedule production
-        // Map: CoilCode -> Width -> [ { date: string, tons: number } ]
-        const productionLog: Record<string, Record<number, { date: string, tons: number }[]>> = {};
+        // Map: CoilCode -> Width -> [ { date: string, tons: number, patternId: number } ]
+        const productionLog: Record<string, Record<number, { date: string, tons: number, patternId: number }[]>> = {};
 
         schedule.forEach(day => {
             day.patterns.forEach((p) => {
@@ -59,7 +77,8 @@ const DateComplianceView: React.FC<{
                     const tons = c.weightPerCut * c.count * p.coils;
                     productionLog[code][c.width].push({
                         date: day.date,
-                        tons: tons
+                        tons: tons,
+                        patternId: p.patternId
                     });
                 });
             });
@@ -69,11 +88,6 @@ const DateComplianceView: React.FC<{
         demands.forEach(d => {
             const code = d.coilCode || 'DEFAULT';
             const availableProduction = productionLog[code]?.[d.width] || [];
-
-            // Logic: Compare Consumption Date (d.date) vs Production Date
-            // We ignore Reserved Stock for this specific compliance check, assuming 
-            // Reserved Stock is already available "now" and doesn't need scheduling.
-            // We only check if the "Por Fabricar" (TargetTons) part is on time.
 
             if (d.targetTons <= 0.01) return; // Skip if no manufacturing needed
 
@@ -86,6 +100,7 @@ const DateComplianceView: React.FC<{
                     toMake: d.targetTons,
                     demandDate: d.date,
                     productionDate: 'No Programado',
+                    patternId: '-',
                     status: 'pending',
                     daysDiff: 0
                 });
@@ -98,12 +113,8 @@ const DateComplianceView: React.FC<{
                 const diffTime = dDate.getTime() - pDate.getTime();
                 const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
-                // If diffDays is positive, Demand is after Production (Early/OnTime = Good)
-                // If diffDays is negative, Demand is before Production (Late = Bad)
-
                 let status = 'ontime';
                 if (diffDays < 0) status = 'late';
-                // USER REQUEST: Anything > 2 days early is considered "Adelantado"
                 if (diffDays > 2) status = 'early';
 
                 data.push({
@@ -114,6 +125,7 @@ const DateComplianceView: React.FC<{
                     toMake: d.targetTons,
                     demandDate: d.date,
                     productionDate: earliest.date,
+                    patternId: earliest.patternId,
                     status,
                     daysDiff: diffDays
                 });
@@ -123,7 +135,6 @@ const DateComplianceView: React.FC<{
         return data.sort((a, b) => {
             if (a.productionDate === 'No Programado') return 1;
             if (b.productionDate === 'No Programado') return -1;
-            // Sort by Production Date (Fabricación)
             return new Date(a.productionDate).getTime() - new Date(b.productionDate).getTime();
         });
     }, [schedule, demands]);
@@ -148,6 +159,7 @@ const DateComplianceView: React.FC<{
                             <th className="px-6 py-3 text-right font-bold text-blue-700">A Fab. (G)</th>
                             <th className="px-6 py-3">Fecha Plan</th>
                             <th className="px-6 py-3">Fecha Fabricación</th>
+                            <th className="px-6 py-3 text-center">ID Diseño</th>
                             <th className="px-6 py-3 text-center">Estado</th>
                         </tr>
                     </thead>
@@ -165,6 +177,9 @@ const DateComplianceView: React.FC<{
                                 </td>
                                 <td className="px-6 py-3 font-medium text-slate-800">
                                     {row.productionDate === 'No Programado' ? '-' : formatDate(row.productionDate)}
+                                </td>
+                                <td className="px-6 py-3 text-center font-mono text-xs text-slate-500">
+                                    {row.patternId}
                                 </td>
                                 <td className="px-6 py-3 text-center">
                                     {row.productionDate === 'No Programado' ? (
@@ -276,11 +291,15 @@ const CalendarGridView: React.FC<{ schedule: DailyPlan[] }> = ({ schedule }) => 
                                     <div className={`text-[9px] px-1 rounded w-fit ${cell.plan.dailyYield >= 98 ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
                                         {cell.plan.dailyYield.toFixed(1)}% Rend.
                                     </div>
-                                    {cell.plan.capacityUsedPercent >= 99 && (
-                                        <div className="text-[9px] font-bold text-white bg-indigo-600 px-1.5 py-0.5 rounded w-fit shadow-sm mt-0.5 mx-auto md:mx-0 animate-pulse">
-                                            ★ 100% CAP
-                                        </div>
-                                    )}
+                                    {/* Always show capacity used percentage */}
+                                    <div className={`text-[9px] font-bold px-1.5 py-0.5 rounded w-fit shadow-sm mt-0.5 ${cell.plan.capacityUsedPercent >= 95
+                                        ? 'text-white bg-indigo-600 animate-pulse'
+                                        : cell.plan.capacityUsedPercent >= 75
+                                            ? 'text-amber-700 bg-amber-100'
+                                            : 'text-slate-600 bg-slate-100'
+                                        }`}>
+                                        {cell.plan.capacityUsedPercent.toFixed(0)}% Cap
+                                    </div>
                                 </div>
                             ) : (
                                 <span className="text-xs text-slate-300">-</span>
@@ -1030,35 +1049,39 @@ export const Results: React.FC<ResultsProps> = ({ batchResult, allDemands, confi
                                         <div className="p-6">
                                             <div className="space-y-2">
                                                 <div className="grid grid-cols-12 gap-2 mb-2 text-xs font-semibold text-slate-500 uppercase">
+                                                    <div className="col-span-2 md:col-span-1">ID</div>
                                                     <div className="col-span-4 md:col-span-3">Bobina</div>
-                                                    <div className="col-span-2 md:col-span-1">Cant.</div>
-                                                    <div className="col-span-4 md:col-span-5">Cortes</div>
-                                                    <div className="col-span-2 md:col-span-1 text-right">Rend %</div>
-                                                    <div className="col-span-12 md:col-span-2 text-right">Peso</div>
+                                                    <div className="col-span-2 md:col-span-1 text-center">Cant.</div>
+                                                    <div className="col-span-4 md:col-span-4">Cortes</div>
+                                                    <div className="col-span-6 md:col-span-1 text-right">Rend %</div>
+                                                    <div className="col-span-6 md:col-span-2 text-right">Peso</div>
                                                 </div>
 
                                                 {day.patterns.map((sp, pIdx) => (
                                                     <div key={pIdx} className="grid grid-cols-12 gap-2 items-center bg-slate-50 p-3 rounded-lg border border-slate-100">
+                                                        <div className="col-span-2 md:col-span-1">
+                                                            <span className="bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded text-xs font-mono font-bold">#{sp.patternId}</span>
+                                                        </div>
                                                         <div className="col-span-4 md:col-span-3 flex flex-col justify-center">
                                                             <div className="bg-indigo-100 text-indigo-700 font-bold px-2 py-0.5 rounded text-xs w-fit mb-1">{sp.coilCode}</div>
                                                             <div className="text-[10px] text-slate-500 leading-tight line-clamp-2" title={sp.coilDescription}>
                                                                 {sp.coilDescription || '-'}
                                                             </div>
                                                         </div>
-                                                        <div className="col-span-2 md:col-span-1 text-sm font-bold text-slate-700">{sp.coils}</div>
-                                                        <div className="col-span-4 md:col-span-5 flex flex-wrap gap-1">
+                                                        <div className="col-span-2 md:col-span-1 text-sm font-bold text-slate-700 text-center">{sp.coils}</div>
+                                                        <div className="col-span-4 md:col-span-4 flex flex-wrap gap-1">
                                                             {sp.pattern.cuts.map((c, i) => (
                                                                 <span key={i} className="text-[10px] bg-white border border-slate-200 px-1.5 py-0.5 rounded text-slate-600">
                                                                     {c.width}mm (x{c.count})
                                                                 </span>
                                                             ))}
                                                         </div>
-                                                        <div className="col-span-2 md:col-span-1 text-right text-sm font-bold">
+                                                        <div className="col-span-6 md:col-span-1 text-right text-sm font-bold">
                                                             <span className={`${sp.pattern.yieldPercentage > 98 ? 'text-emerald-600' : 'text-slate-600'}`}>
                                                                 {sp.pattern.yieldPercentage.toFixed(1)}%
                                                             </span>
                                                         </div>
-                                                        <div className="col-span-12 md:col-span-2 text-right text-sm text-slate-500 font-mono">
+                                                        <div className="col-span-6 md:col-span-2 text-right text-sm text-slate-500 font-mono">
                                                             {sp.pattern.totalProductionWeight.toFixed(1)} T
                                                         </div>
                                                     </div>

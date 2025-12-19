@@ -68,12 +68,18 @@ export const DemandInput: React.FC<DemandInputProps> = ({ demands, setDemands, i
   };
 
   const excelDateToJSDate = (serial: number): string => {
-    const utc_days = Math.floor(serial - 25569);
-    const utc_value = utc_days * 86400;
-    const date_info = new Date(utc_value * 1000);
-    const year = date_info.getFullYear();
-    const month = String(date_info.getMonth() + 1).padStart(2, '0');
-    const day = String(date_info.getDate() + 1).padStart(2, '0');
+    // Excel base date: Dec 30 1899
+    // JS base date: Jan 1 1970
+    // Diff is approx 25569 days
+    // However, Excel treats 1900 as leap year (bug), so usually we adjust.
+    // robust method:
+    const excelBase = new Date(Date.UTC(1899, 11, 30));
+    const jsDate = new Date(excelBase.getTime() + serial * 24 * 60 * 60 * 1000);
+
+    // We want the YYYY-MM-DD
+    const year = jsDate.getUTCFullYear();
+    const month = String(jsDate.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(jsDate.getUTCDate()).padStart(2, '0');
     return `${year}-${month}-${day}`;
   }
 
@@ -345,23 +351,24 @@ export const DemandInput: React.FC<DemandInputProps> = ({ demands, setDemands, i
               <Eraser className="w-3 h-3" /> Borrar
             </button>
 
-            <button
-              type="button"
-              onClick={() => {
-                // FUNCTION TO LOAD FROM LOCAL FOLDER API
-                fetch('/api/list-input')
-                  .then(res => {
-                    if (!res.ok) throw new Error('Error listando archivos');
-                    return res.json();
-                  })
-                  .then(files => {
-                    if (files.length === 0) {
-                      alert('No se encontraron archivos Excel en la carpeta OpitmizadorV3gilmore/input');
-                      return;
-                    }
-                    // Load the most recent file
-                    const newestFile = files[0].name;
-                    if (window.confirm(`Se encontró el archivo: ${newestFile}\n¿Deseas cargarlo?`)) {
+            {import.meta.env.DEV && (
+              <button
+                type="button"
+                onClick={() => {
+                  // FUNCTION TO LOAD FROM LOCAL FOLDER API
+                  fetch('/api/list-input')
+                    .then(res => {
+                      if (!res.ok) throw new Error('Error listando archivos');
+                      return res.json();
+                    })
+                    .then(files => {
+                      if (files.length === 0) {
+                        alert('No se encontraron archivos Excel en la carpeta OpitmizadorV3gilmore/input');
+                        return;
+                      }
+                      // Load the most recent file
+                      const newestFile = files[0].name;
+                      // Automatically load the file without confirmation
                       return fetch(`/api/read-input?file=${encodeURIComponent(newestFile)}`)
                         .then(res => res.arrayBuffer())
                         .then(buffer => {
@@ -369,19 +376,19 @@ export const DemandInput: React.FC<DemandInputProps> = ({ demands, setDemands, i
                           // Reuse existing logic by creating a synthetic event or extracting logic
                           processWorkbook(workbook);
                         });
-                    }
-                  })
-                  .catch(err => {
-                    console.error(err);
-                    alert("Error: No se pudo conectar con la carpeta local. Asegúrate de estar corriendo el servidor de desarrollo.");
-                  });
-              }}
-              className="cursor-pointer flex items-center gap-2 text-xs font-medium text-indigo-700 hover:text-indigo-800 transition-colors bg-indigo-50 hover:bg-indigo-100 px-3 py-1.5 rounded border border-indigo-200"
-              title="Leer carpeta input del servidor"
-            >
-              <FolderInput className="w-4 h-4" />
-              Cargar desde Input
-            </button>
+                    })
+                    .catch(err => {
+                      console.error(err);
+                      alert("Error: No se pudo conectar con la carpeta local. Asegúrate de estar corriendo el servidor de desarrollo.");
+                    });
+                }}
+                className="cursor-pointer flex items-center gap-2 text-xs font-medium text-indigo-700 hover:text-indigo-800 transition-colors bg-indigo-50 hover:bg-indigo-100 px-3 py-1.5 rounded border border-indigo-200"
+                title="Leer carpeta input del servidor"
+              >
+                <FolderInput className="w-4 h-4" />
+                Cargar desde Input
+              </button>
+            )}
 
             <label className="cursor-pointer flex items-center gap-2 text-xs font-medium text-emerald-700 hover:text-emerald-800 transition-colors bg-emerald-50 hover:bg-emerald-100 px-3 py-1.5 rounded border border-emerald-200">
               <FileSpreadsheet className="w-4 h-4" />

@@ -2,6 +2,7 @@ import path from 'path';
 import fs from 'fs';
 import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
+import { viteSingleFile } from "vite-plugin-singlefile";
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '.', '');
@@ -12,6 +13,7 @@ export default defineConfig(({ mode }) => {
     },
     plugins: [
       react(),
+      viteSingleFile(),
       {
         name: 'read-input-folder',
         configureServer(server) {
